@@ -3897,6 +3897,8 @@ def load_sessions():
                 sessions = json.load(f)
             except json.JSONDecodeError:
                 sessions = {}
+    else:
+        sessions = {}
 
 async def save_sessions():
     with open(SESSIONS_FILE, "w") as f:
@@ -3904,7 +3906,6 @@ async def save_sessions():
 
 # --- دالة ربط كل أوامر البوت بالجلسات الجديدة ---
 def register_all_handlers(c):
-
     @c.on(events.NewMessage(pattern=r"^\.جلساتي$"))
     async def list_sessions(event):
         if not sessions:
@@ -3926,97 +3927,19 @@ def register_all_handlers(c):
                     os.remove(sessions[session_name]["file"])
                 del sessions[session_name]
                 await save_sessions()
+                
+                # إيقاف العميل إذا كان يعمل
+                for running_client in running_clients:
+                    if hasattr(running_client.session, 'filename') and running_client.session.filename == session_name:
+                        await running_client.disconnect()
+                        running_clients.remove(running_client)
+                        break
+                        
                 await event.edit(f"**✅ تم إنهاء الجلسة بنجاح:** `{session_name}`")
             else:
                 await event.edit("**⛔ رقم الجلسة غير صحيح.**")
         except Exception as e:
             await event.edit(f"**⛔ حدث خطأ:**\n`{str(e)}`")
-
-    # هنا تضيف أي أوامر ثانية من البوت بنفس الطريقة
-
-# --- أمر التنصيب ---
-@client.on(events.NewMessage(from_users='me', pattern=r"^\.تنصيب(?: (.*))?$"))
-async def install_session(event):
-    replied_message = await event.get_reply_message()
-    
-    if not (replied_message and replied_message.file):
-        await event.edit("**⚠️ خطأ: يجب الرد على رسالة تحتوي على ملف الجلسة.**")
-        return
-
-    file_name = replied_message.file.name
-    if not (file_name.endswith(".session") or file_name.endswith(".db")):
-        await event.edit("**⛔ خطأ: يجب الرد على ملف بامتداد .session أو .db فقط.**")
-        return
-
-    await event.edit("⏳ جارٍ تحميل وتنصيب الجلسة...")
-    
-    download_path = await replied_message.download_media(file=".")
-    
-    original_name = os.path.basename(download_path)
-    session_name_to_save = original_name
-    counter = 1
-    while session_name_to_save in sessions:
-        name, ext = os.path.splitext(original_name)
-        session_name_to_save = f"{name}({counter}){ext}"
-        counter += 1
-    
-    if session_name_to_save != original_name:
-        new_path = os.path.join(os.path.dirname(download_path), session_name_to_save)
-        os.rename(download_path, new_path)
-        download_path = new_path
-
-    me = await client.get_me()
-    sessions[session_name_to_save] = {
-        "file": download_path,
-        "added_by": me.id,
-        "added_at": str(datetime.datetime.now()),
-        "expiry": None
-    }
-    
-    arg = event.pattern_match.group(1)
-    
-    if arg is None:
-        sessions[session_name_to_save]["expiry"] = "دائم"
-        response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` (تنصيب دائم).**"
-    elif arg == "تجريبي":
-        expiry_time = datetime.datetime.now() + datetime.timedelta(hours=4)
-        sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
-        response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` كتجربة لمدة 4 ساعات.**"
-    elif arg.isdigit():
-        days = int(arg)
-        expiry_time = datetime.datetime.now() + datetime.timedelta(days=days)
-        sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
-        response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` لمدة `{days}` أيام.**"
-    else:
-        del sessions[session_name_to_save]
-        os.remove(download_path)
-        await save_sessions()
-        await event.edit("**⛔ خطأ في صيغة الأمر. استخدم:\n`.تنصيب`\n`.تنصيب تجريبي`\n`.تنصيب 5`**")
-        return 
-
-    # 🔑 تشغيل الجلسة الجديدة مباشرة وتخليها تظل شغالة بالخلفية
-    try:
-        session = SQLiteSession(download_path)
-        new_client = TelegramClient(session, api_id=1, api_hash="1")
-        await new_client.start()
-        running_clients.append(new_client)
-
-        # ربط كل أوامر البوت بالجلسة الجديدة
-        register_all_handlers(new_client)
-
-        # تشغيل الجلسة الجديدة في نفس لوب البوت الرئيسي
-        async def run_client(c):
-            await c.run_until_disconnected()
-        client.loop.create_task(run_client(new_client))
-
-        me_new = await new_client.get_me()
-        print(f"✅ جلسة {session_name_to_save} اشتغلت ({me_new.id})")
-    except Exception as e:
-        await event.edit(f"**⛔ فشل تشغيل الجلسة:** `{str(e)}`")
-        return
-
-    await save_sessions()
-    await event.edit(response_message)
 
 
 import asyncio
@@ -5622,9 +5545,119 @@ async def main():
     await client.send_message("me", uu)
     await client.start()
     await asyncio.Event().wait()
+    @client.on(events.NewMessage(from_users='me', pattern=r"^\.تنصيب(?: (.*))?$"))
+    async def install_session(event):
+        replied_message = await event.get_reply_message()
+        
+        if not (replied_message and replied_message.file):
+            await event.edit("**⚠️ خطأ: يجب الرد على رسالة تحتوي على ملف الجلسة.**")
+            return
+
+        file_name = replied_message.file.name
+        if not (file_name and (file_name.endswith(".session") or file_name.endswith(".db"))):
+            await event.edit("**⛔ خطأ: يجب الرد على ملف بامتداد .session أو .db فقط.**")
+            return
+
+        await event.edit("⏳ جارٍ تحميل وتنصيب الجلسة...")
+        
+        download_path = await replied_message.download_media(file=".")
+        
+        original_name = os.path.basename(download_path)
+        session_name_to_save = original_name
+        counter = 1
+        while session_name_to_save in sessions:
+            name, ext = os.path.splitext(original_name)
+            session_name_to_save = f"{name}({counter}){ext}"
+            counter += 1
+        
+        if session_name_to_save != original_name:
+            new_path = os.path.join(os.path.dirname(download_path), session_name_to_save)
+            os.rename(download_path, new_path)
+            download_path = new_path
+
+        me = await client.get_me()
+        sessions[session_name_to_save] = {
+            "file": download_path,
+            "added_by": me.id,
+            "added_at": str(datetime.datetime.now()),
+            "expiry": None
+        }
+        
+        arg = event.pattern_match.group(1)
+        
+        if arg is None:
+            sessions[session_name_to_save]["expiry"] = "دائم"
+            response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` (تنصيب دائم).**"
+        elif arg == "تجريبي":
+            expiry_time = datetime.datetime.now() + datetime.timedelta(hours=4)
+            sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
+            response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` كتجربة لمدة 4 ساعات.**"
+        elif arg.isdigit():
+            days = int(arg)
+            expiry_time = datetime.datetime.now() + datetime.timedelta(days=days)
+            sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
+            response_message = f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` لمدة `{days}` أيام.**"
+        else:
+            del sessions[session_name_to_save]
+            os.remove(download_path)
+            await save_sessions()
+            await event.edit("**⛔ خطأ في صيغة الأمر. استخدم:\n`.تنصيب`\n`.تنصيب تجريبي`\n`.تنصيب 5`**")
+            return 
+
+        # 🔑 تشغيل الجلسة الجديدة مباشرة وتخليها تظل شغالة بالخلفية
+        try:
+            session = SQLiteSession(download_path)
+            # استخدام نفس api_id و api_hash مثل العميل الرئيسي
+            new_client = TelegramClient(session, api_id, api_hash)
+            await new_client.start()
+            running_clients.append(new_client)
+
+            # ربط كل أوامر البوت بالجلسة الجديدة
+            register_all_handlers(new_client)
+
+            # تشغيل الجلسة الجديدة في نفس لوب البوت الرئيسي
+            async def run_client(c):
+                await c.run_until_disconnected()
+            asyncio.create_task(run_client(new_client))
+
+            me_new = await new_client.get_me()
+            print(f"✅ جلسة {session_name_to_save} اشتغلت ({me_new.id})")
+        except Exception as e:
+            await event.edit(f"**⛔ فشل تشغيل الجلسة:** `{str(e)}`")
+            return
+
+        await save_sessions()
+        await event.edit(response_message)
+    
+    # بدء العميل الرئيسي
+    await client.start()
+    
+    # تحميل الجلسات المحفوظة
+    load_sessions()
+    
+    # تشغيل جميع الجلسات المحفوظة
+    for session_name, session_info in sessions.items():
+        try:
+            if os.path.exists(session_info["file"]):
+                session = SQLiteSession(session_info["file"])
+                new_client = TelegramClient(session, api_id, api_hash)
+                await new_client.start()
+                running_clients.append(new_client)
+                register_all_handlers(new_client)
+                asyncio.create_task(new_client.run_until_disconnected())
+                print(f"✅ تم تشغيل الجلسة المحفوظة: {session_name}")
+            else:
+                print(f"❌ ملف الجلسة غير موجود: {session_info['file']}")
+        except Exception as e:
+            print(f"❌ فشل تشغيل الجلسة {session_name}: {e}")
+    
+    # تسجيل handlers للعميل الرئيسي
+    register_all_handlers(client)
     
 
 with client:
     client.loop.run_until_complete(main())
+
+
 
 
